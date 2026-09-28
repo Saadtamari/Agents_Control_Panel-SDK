@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { AgentPausedError, type AgentStatus } from "./errors.js";
 import { NonceCache, verifySignature } from "./signature.js";
 import { extractTokens } from "./tokens.js";
+import { clampFull, clampSummary, extractText } from "./content.js";
 
 export type Logger = {
   info?: (...args: unknown[]) => void;
@@ -31,6 +32,12 @@ export type CreateClientOptions = {
    * Loopback hosts (localhost, 127.0.0.1, ::1) are always allowed over http.
    */
   allowInsecureHttp?: boolean;
+  /**
+   * Send run content (user input, full input, the answer text) with each run. Default true: quality reviews,
+   * Test Lab and error explanations need it. `false` sends metadata only (status, tokens, timings, model,
+   * errors), whatever `reportRun` or `wrapAgentRun` is given.
+   */
+  captureContent?: boolean;
 };
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
@@ -74,12 +81,38 @@ export type ReportRunInput = {
   dedupeKey?: string;
 };
 
-type BufferedRun = ReportRunInput & { dedupe_key: string; agent_id: string };
+type BufferedRun = ReportRunInput & {
+  dedupe_key: string;
+  agent_id: string;
+  fullInputTruncated?: boolean;
+  fullOutputTruncated?: boolean;
+};
 
 const DEFAULT_FLUSH_MS = 5000;
 const DEFAULT_FLUSH_AT = 50;
 const DEFAULT_MAX_BUFFER = 200;
 const MAX_RETRIES = 4;
+/** Keep each report request well under the ingest body limit (10 MB) by splitting large batches. */
+const MAX_BATCH_BYTES = 4_000_000;
+
+/** Split rows into consecutive groups whose JSON stays under `maxBytes` (a single larger row goes alone). */
+function chunkBySize<T>(rows: T[], maxBytes: number): T[][] {
+  const chunks: T[][] = [];
+  let current: T[] = [];
+  let size = 0;
+  for (const row of rows) {
+    const bytes = Buffer.byteLength(JSON.stringify(row)) + 1;
+    if (current.length > 0 && size + bytes > maxBytes) {
+      chunks.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(row);
+    size += bytes;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -97,6 +130,7 @@ export class AcpClient {
   readonly webhookSecret: string;
   readonly webhookSecretPrev: string | null;
   readonly disableControl: boolean;
+  readonly captureContent: boolean;
 
   private heartbeatMs: number;
   private flushMs: number;
@@ -156,6 +190,7 @@ export class AcpClient {
     };
     this.disableControl =
       opts.disableControl === true || process.env.ACP_DISABLE_CONTROL === "1";
+    this.captureContent = opts.captureContent !== false;
   }
 
   get status(): AgentStatus {
@@ -206,6 +241,17 @@ export class AcpClient {
     return (await this.postWithResponse(path, body)).ok;
   }
 
+  /**
+   * A redirect is never followed: the request carries the API key (in the body or a header), and a 307/308
+   * would resend it to wherever the redirect points. Log where ACP moved so the url can be updated.
+   */
+  private redirectWarning(what: string, res: Response): string | null {
+    const redirected = (res.status >= 300 && res.status < 400) || res.type === "opaqueredirect";
+    if (!redirected) return null;
+    const location = typeof res.headers?.get === "function" ? res.headers.get("location") : null;
+    return `${what} -> ${res.status} redirect${location ? ` to ${location}` : ""}: not followed (the API key is never sent to another address). Update the ACP url.`;
+  }
+
   /** Fail-open POST that also returns the parsed JSON body (null if absent or invalid). Never throws. */
   private async postWithResponse(path: string, body: unknown): Promise<{ ok: boolean; json: unknown }> {
     try {
@@ -213,13 +259,15 @@ export class AcpClient {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        redirect: "manual",
         signal: AbortSignal.timeout(10_000),
       });
       if (!res.ok) {
         this.logger.warn?.(
-          res.status === 401
-            ? `${path} -> 401: ACP rejected the API key. Check ACP_API_KEY is the full key shown once when it was created (not revoked); create a new key on the app page if unsure.`
-            : `${path} -> ${res.status}`,
+          this.redirectWarning(path, res) ??
+            (res.status === 401
+              ? `${path} -> 401: ACP rejected the API key. Check ACP_API_KEY is the full key shown once when it was created (not revoked); create a new key on the app page if unsure.`
+              : `${path} -> ${res.status}`),
         );
         return { ok: false, json: null };
       }
@@ -306,8 +354,18 @@ export class AcpClient {
         this.dropped += 1;
         this.logger.warn?.(`report buffer full; dropped oldest (total dropped=${this.dropped})`);
       }
+      // Content is cut to what ACP stores (and flagged) now, so the buffer and each request stay bounded.
+      const fullIn = this.captureContent ? clampFull(input.fullInput) : { value: undefined, truncated: false };
+      const fullOut = this.captureContent ? clampFull(input.fullOutput) : { value: undefined, truncated: false };
       this.buffer.push({
         ...input,
+        userInput: this.captureContent ? input.userInput : undefined,
+        inputSummary: this.captureContent ? input.inputSummary : undefined,
+        outputSummary: this.captureContent ? input.outputSummary : undefined,
+        fullInput: fullIn.value,
+        fullOutput: fullOut.value,
+        fullInputTruncated: fullIn.truncated,
+        fullOutputTruncated: fullOut.truncated,
         promptVersion: input.promptVersion ?? this.cachedPrompt?.version,
         compositionHash: input.compositionHash ?? this.cachedPrompt?.compositionHash,
         agent_id: this.agentId,
@@ -332,46 +390,47 @@ export class AcpClient {
 
   private async sendBuffered(): Promise<void> {
     const batch = this.buffer.splice(0, this.buffer.length);
+    let pending = batch.length;
     try {
-      let attempt = 0;
-      while (attempt <= MAX_RETRIES) {
-        const ok = await this.post("/api/report", {
-          api_key: this.apiKey,
-          runs: batch.map((r) => ({
-            agent_id: r.agent_id,
-            dedupe_key: r.dedupe_key,
-            status: r.status,
-            input_summary: r.inputSummary,
-            output_summary: r.outputSummary,
-            error_message: r.errorMessage,
-            tokens_input: r.tokensInput || 0,
-            tokens_output: r.tokensOutput || 0,
-            tokens_total: r.tokensTotal || (r.tokensInput || 0) + (r.tokensOutput || 0),
-            execution_time_ms: r.executionTimeMs,
-            model_used: r.modelUsed,
-            prompt_version: r.promptVersion,
-            composition_hash: r.compositionHash,
-            trigger: r.trigger,
-            user_input: r.userInput,
-            full_input: r.fullInput,
-            full_output: r.fullOutput,
-          })),
-        });
-        if (ok) return;
-        if (attempt === MAX_RETRIES) {
-          this.dropped += batch.length;
-          this.logger.warn?.(
-            `flush failed after retries; dropping ${batch.length} runs (total dropped=${this.dropped})`,
-          );
-          return;
-        }
-        await sleep(jitterBackoff(attempt));
-        attempt += 1;
+      const rows = batch.map((r) => ({
+        agent_id: r.agent_id,
+        dedupe_key: r.dedupe_key,
+        status: r.status,
+        input_summary: r.inputSummary,
+        output_summary: r.outputSummary,
+        error_message: r.errorMessage,
+        tokens_input: r.tokensInput || 0,
+        tokens_output: r.tokensOutput || 0,
+        tokens_total: r.tokensTotal || (r.tokensInput || 0) + (r.tokensOutput || 0),
+        execution_time_ms: r.executionTimeMs,
+        model_used: r.modelUsed,
+        prompt_version: r.promptVersion,
+        composition_hash: r.compositionHash,
+        trigger: r.trigger,
+        user_input: r.userInput,
+        full_input: r.fullInput,
+        full_output: r.fullOutput,
+        ...(r.fullInputTruncated ? { full_input_truncated: true } : {}),
+        ...(r.fullOutputTruncated ? { full_output_truncated: true } : {}),
+      }));
+      for (const chunk of chunkBySize(rows, MAX_BATCH_BYTES)) {
+        await this.sendChunk(chunk);
+        pending -= chunk.length;
       }
     } catch (err) {
-      this.dropped += batch.length;
+      this.dropped += pending;
       this.logger.warn?.("flush error (fail-open, dropped batch):", err);
     }
+  }
+
+  /** One report request with retries; a chunk that still fails is dropped (fail-open). */
+  private async sendChunk(runs: unknown[]): Promise<void> {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+      if (await this.post("/api/report", { api_key: this.apiKey, runs })) return;
+      if (attempt < MAX_RETRIES) await sleep(jitterBackoff(attempt));
+    }
+    this.dropped += runs.length;
+    this.logger.warn?.(`flush failed after retries; dropping ${runs.length} runs (total dropped=${this.dropped})`);
   }
 
   /**
@@ -386,13 +445,15 @@ export class AcpClient {
     try {
       const res = await this.fetchImpl(`${this.url}/api/prompts/${this.agentId}`, {
         headers: { "x-api-key": this.apiKey },
+        redirect: "manual",
         signal: AbortSignal.timeout(5_000),
       });
       if (!res.ok) {
         this.logger.warn?.(
-          res.status === 401
-            ? "prompt fetch -> 401: ACP rejected the API key (using the cached prompt). Check ACP_API_KEY."
-            : `prompt fetch -> ${res.status} (using the cached prompt)`,
+          this.redirectWarning("prompt fetch", res) ??
+            (res.status === 401
+              ? "prompt fetch -> 401: ACP rejected the API key (using the cached prompt). Check ACP_API_KEY."
+              : `prompt fetch -> ${res.status} (using the cached prompt)`),
         );
         return this.cachedPrompt?.prompt || "";
       }
@@ -424,9 +485,16 @@ export class AcpClient {
     return this.cachedPrompt?.version;
   }
 
+  /**
+   * Run `fn`, report it, and return its result (or rethrow its error unchanged). The answer text is read from
+   * common LLM client responses (see `extractText`) and reported as the run's output, so quality reviews and
+   * Test Lab can judge it. Pass `userInput` (the end user's request) and `fullInput` (what was sent to the
+   * model, e.g. the messages array) for complete context. Nothing is reported as content when the client was
+   * created with `captureContent: false`.
+   */
   async wrapAgentRun<T>(
     fn: () => Promise<T>,
-    opts?: { inputSummary?: string; modelUsed?: string },
+    opts?: { inputSummary?: string; userInput?: string; fullInput?: unknown; modelUsed?: string },
   ): Promise<T> {
     if (this._status === "paused" || this._status === "stopped") {
       throw new AgentPausedError(this._status);
@@ -435,12 +503,20 @@ export class AcpClient {
     const started = Date.now();
     const prev = this._status;
     this._status = "running";
+    const common = {
+      inputSummary: opts?.inputSummary,
+      userInput: opts?.userInput,
+      fullInput: opts?.fullInput,
+    };
     try {
       const result = await fn();
       const tokens = extractTokens(result);
+      const text = this.captureContent ? extractText(result) : null;
       this.reportRun({
+        ...common,
         status: "success",
-        inputSummary: opts?.inputSummary,
+        outputSummary: clampSummary(text),
+        fullOutput: text ?? undefined,
         tokensInput: tokens?.tokensInput,
         tokensOutput: tokens?.tokensOutput,
         tokensTotal: tokens?.tokensTotal,
@@ -451,8 +527,8 @@ export class AcpClient {
       return result;
     } catch (err) {
       this.reportRun({
+        ...common,
         status: "error",
-        inputSummary: opts?.inputSummary,
         errorMessage: err instanceof Error ? err.message : String(err),
         executionTimeMs: Date.now() - started,
         modelUsed: opts?.modelUsed || this.modelOverride || undefined,

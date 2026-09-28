@@ -3,6 +3,17 @@
 All notable changes to the SDK. Versions stay `0.x` until the wire contract is proven with real customers;
 after the first public release, contract changes are additive only (clients live inside customer apps).
 
+## 0.3.0 — 2026-09-29
+
+- **Runs now include their content.** `wrapAgentRun` reports the answer text (read from OpenAI, Anthropic,
+  Gemini and Vercel AI SDK results by the new `extractText`) and accepts `userInput` and `fullInput`. Until now it
+  sent no output at all, so ACP's quality reviews and Test Lab had nothing to judge for SDK-wrapped runs.
+- **`captureContent: false`** sends metadata only (status, tokens, timings, model, errors), from `wrapAgentRun`
+  and `reportRun` alike. Default `true`.
+- **Content is cut to what ACP stores** (100,000 characters per full field, flagged as truncated) and a large
+  flush is split into requests under 4 MB, so a batch of long runs is never rejected as a whole.
+- **Redirects are never followed.** Requests carry the API key; a 3xx is logged with its target and fails open.
+
 ## 0.2.0 — 2026-09-28
 
 - **Published as `agent-control-panel`** (was the unpublished placeholder `@acp/sdk`), licensed Apache-2.0.

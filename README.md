@@ -27,14 +27,17 @@ const acp = createClient({
 acp.start(); // heartbeats every 30 s
 
 const answer = await acp.wrapAgentRun(() => llm.chat(messages), {
-  inputSummary: userQuestion.slice(0, 200),
+  userInput: userQuestion,   // what the end user asked
+  fullInput: messages,       // everything sent to the model
   modelUsed: acp.getEffectiveModel("gpt-4o-mini") ?? "gpt-4o-mini",
 });
 ```
 
-`wrapAgentRun` records duration, success/error and token usage, read automatically from OpenAI (Chat
-Completions and Responses), Anthropic (including prompt-cache tokens), Google Gemini and Vercel AI SDK results;
-for anything else pass tokens to `reportRun` yourself. While the agent is paused or stopped it throws `AgentPausedError` **without calling your
+`wrapAgentRun` records duration, success/error, token usage and the answer text, read automatically from OpenAI
+(Chat Completions and Responses), Anthropic (including prompt-cache tokens), Google Gemini and Vercel AI SDK
+results; for anything else pass tokens and `fullOutput` to `reportRun` yourself. ACP's quality reviews, Test Lab
+and error explanations read the user input, full input and output, so pass them for accurate results (each field
+is kept up to 100,000 characters). To send metadata only, create the client with `captureContent: false`. While the agent is paused or stopped it throws `AgentPausedError` **without calling your
 function**, so a pause really stops model calls.
 
 ### Receive control commands (Express)
@@ -56,10 +59,11 @@ arrive with the next heartbeat (within 30 s); prompt changes are fetched before 
 
 | Member | What it does |
 |---|---|
-| `createClient(options)` | `url`, `apiKey`, `agentId`, `webhookSecret` (required); `webhookSecretPrev` during rotation; `heartbeatMs` (30000), `flushMs` (5000), `flushAt` (50), `maxBuffer` (200); `logger`; `disableControl`; `fetch` (for tests). `url` must be https (or http to localhost). |
+| `createClient(options)` | `url`, `apiKey`, `agentId`, `webhookSecret` (required); `webhookSecretPrev` during rotation; `heartbeatMs` (30000), `flushMs` (5000), `flushAt` (50), `maxBuffer` (200); `logger`; `disableControl`; `captureContent` (default `true`; `false` = metadata only); `fetch` (for tests). `url` must be https (or http to localhost). |
 | `start()` / `stop()` | Start heartbeats and background flushing / flush everything and stop. The timers never keep your process alive on their own, and pending runs are flushed when Node is about to exit; call `stop()` on shutdown to be sure every run is sent. |
-| `wrapAgentRun(fn, { inputSummary?, modelUsed? })` | Run `fn`, report it, rethrow its error unchanged. Throws `AgentPausedError` while paused or stopped. |
-| `reportRun(input)` | Report a run yourself (status, tokens, model, timings, summaries, optional `dedupeKey`). Buffered, never throws. |
+| `wrapAgentRun(fn, { userInput?, fullInput?, inputSummary?, modelUsed? })` | Run `fn`, report it (with the answer text from the result), rethrow its error unchanged. Throws `AgentPausedError` while paused or stopped. |
+| `extractText(result)` | The answer text of an OpenAI, Anthropic, Gemini or Vercel AI SDK result, or `null`. |
+| `reportRun(input)` | Report a run yourself (status, tokens, model, timings, summaries, `userInput`, `fullInput`, `fullOutput`, optional `dedupeKey`). Buffered, never throws. |
 | `fetchPrompt()` | The agent's current prompt from ACP (composed with its skills), cached; falls back to the cache on any error. |
 | `getEffectiveModel(fallback)` | The model ACP asked for (after a model swap), else `fallback`. |
 | `status` | `idle`, `running`, `paused`, `stopped`, … |
@@ -74,6 +78,10 @@ arrive with the next heartbeat (within 30 s); prompt changes are fetched before 
 - Rotate the webhook secret in ACP, then set the old one as `webhookSecretPrev` until every instance has the
   new one.
 - Commands are accepted only within 5 minutes of their timestamp and only once (nonce cache).
+- Run content (user input, full input, the answer) is sent to ACP by default, cut to 100,000 characters per
+  field. Leave out anything you must not share, or use `captureContent: false` for metadata only.
+- Redirects are never followed: requests carry the API key, so a redirect is logged (with its target) and
+  the request fails open. Update `url` if ACP moves.
 
 ## Troubleshooting
 

@@ -3,6 +3,8 @@ import {
   createClient,
   AgentPausedError,
   extractTokens,
+  extractText,
+  MAX_FULL_CHARS,
   signPayload,
   verifySignature,
   NonceCache,
@@ -610,5 +612,115 @@ describe("release hardening", () => {
     expect(await acp.fetchPrompt()).toBe("");
     expect(warn.mock.calls[0][0]).toMatch(/401/);
     await acp.stop();
+  });
+});
+
+describe("run content (0.3.0)", () => {
+  const base = { url: "https://panel.test", apiKey: "acp_test", agentId: "agent-1", webhookSecret: "whsec_test" };
+  const reportBodies = (fetchMock: ReturnType<typeof mockFetchSequence>) =>
+    fetchMock.mock.calls
+      .filter((c) => String(c[0]).includes("/api/report"))
+      .map((c) => JSON.parse(String(c[1]?.body)) as { runs: Array<Record<string, unknown>> });
+
+  it("wrapAgentRun reports the answer text, the user input and the full input", async () => {
+    const fetchMock = mockFetchSequence([{ ok: true }]);
+    const acp = createClient({ ...base, fetch: fetchMock as any });
+    const messages = [{ role: "user", content: "What is 2+2?" }];
+    await acp.wrapAgentRun(
+      async () => ({
+        choices: [{ message: { role: "assistant", content: "4" } }],
+        usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+      }),
+      { userInput: "What is 2+2?", fullInput: messages, modelUsed: "gpt-4o" },
+    );
+    await acp.stop();
+    const run = reportBodies(fetchMock)[0].runs[0];
+    expect(run).toMatchObject({
+      status: "success",
+      user_input: "What is 2+2?",
+      full_input: JSON.stringify(messages),
+      full_output: "4",
+      output_summary: "4",
+      tokens_total: 11,
+      model_used: "gpt-4o",
+    });
+  });
+
+  it("an error run keeps its input, and the error is rethrown unchanged", async () => {
+    const fetchMock = mockFetchSequence([{ ok: true }]);
+    const acp = createClient({ ...base, fetch: fetchMock as any });
+    const err = new Error("boom");
+    await expect(acp.wrapAgentRun(async () => { throw err; }, { userInput: "hi", fullInput: "prompt" })).rejects.toBe(err);
+    await acp.stop();
+    expect(reportBodies(fetchMock)[0].runs[0]).toMatchObject({ status: "error", user_input: "hi", full_input: "prompt", error_message: "boom" });
+  });
+
+  it("captureContent: false reports metadata only, even from reportRun", async () => {
+    const fetchMock = mockFetchSequence([{ ok: true }]);
+    const acp = createClient({ ...base, fetch: fetchMock as any, captureContent: false });
+    await acp.wrapAgentRun(async () => "secret answer", { userInput: "secret question", fullInput: "secret prompt" });
+    acp.reportRun({ status: "success", inputSummary: "s", outputSummary: "o", userInput: "u", fullInput: "i", fullOutput: "x", tokensTotal: 3 });
+    await acp.stop();
+    const runs = reportBodies(fetchMock)[0].runs;
+    expect(runs).toHaveLength(2);
+    for (const run of runs) {
+      for (const key of ["user_input", "input_summary", "output_summary", "full_input", "full_output"]) {
+        expect(run[key]).toBeUndefined();
+      }
+    }
+    expect(JSON.stringify(runs)).not.toContain("secret");
+    expect(runs[1].tokens_total).toBe(3);
+  });
+
+  it("content longer than ACP stores is cut and flagged; a big flush is split under the body limit", async () => {
+    const fetchMock = mockFetchSequence([{ ok: true }]);
+    const acp = createClient({ ...base, fetch: fetchMock as any, flushAt: 1000, maxBuffer: 1000 });
+    const long = "x".repeat(MAX_FULL_CHARS + 500);
+    for (let i = 0; i < 30; i++) acp.reportRun({ status: "success", fullInput: long, fullOutput: long });
+    await acp.stop();
+    const bodies = reportBodies(fetchMock);
+    expect(bodies.length).toBeGreaterThan(1);
+    expect(bodies.reduce((n, b) => n + b.runs.length, 0)).toBe(30);
+    for (const call of fetchMock.mock.calls.filter((c) => String(c[0]).includes("/api/report"))) {
+      expect(Buffer.byteLength(String(call[1]?.body))).toBeLessThan(5_000_000);
+    }
+    const run = bodies[0].runs[0];
+    expect(String(run.full_input)).toHaveLength(MAX_FULL_CHARS);
+    expect(run.full_input_truncated).toBe(true);
+    expect(run.full_output_truncated).toBe(true);
+  });
+
+  it("never follows a redirect and says where ACP moved", async () => {
+    const warn = vi.fn();
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 308,
+      headers: new Headers({ location: "https://new.example/api/report" }),
+      json: async () => ({}),
+    }) as unknown as Response);
+    const acp = createClient({ ...base, fetch: fetchMock as any, logger: { warn } });
+    await acp.fetchPrompt();
+    expect((fetchMock.mock.calls[0] as unknown[])[1]).toMatchObject({ redirect: "manual" });
+    expect(String(warn.mock.calls[0][0])).toMatch(/308 redirect to https:\/\/new\.example\/api\/report: not followed.*Update the ACP url/);
+  });
+});
+
+describe("extractText", () => {
+  it("reads OpenAI (chat and Responses), Anthropic, Gemini and Vercel AI SDK results", () => {
+    expect(extractText("plain")).toBe("plain");
+    expect(extractText({ choices: [{ message: { content: "chat" } }] })).toBe("chat");
+    expect(extractText({ choices: [{ message: { content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] } }] })).toBe("ab");
+    expect(extractText({ output_text: "responses" })).toBe("responses");
+    expect(extractText({ content: [{ type: "text", text: "claude" }, { type: "tool_use", name: "t" }] })).toBe("claude");
+    expect(extractText({ response: { candidates: [{ content: { parts: [{ text: "gem" }, { text: "ini" }] } }] } })).toBe("gemini");
+    expect(extractText({ candidates: [{ content: { parts: [{ text: "g2" }] } }] })).toBe("g2");
+    expect(extractText({ text: "vercel" })).toBe("vercel");
+  });
+
+  it("returns null for unknown shapes and never calls methods on the result", () => {
+    const text = vi.fn(() => "called");
+    expect(extractText({ text })).toBeNull();
+    expect(text).not.toHaveBeenCalled();
+    for (const junk of [null, undefined, 42, "", {}, { choices: [] }, { content: "x" }]) expect(extractText(junk)).toBeNull();
   });
 });
