@@ -3,6 +3,12 @@
 All notable changes to the SDK. Versions stay `0.x` until the wire contract is proven with real customers;
 after the first public release, contract changes are additive only (clients live inside customer apps).
 
+## 0.3.1 — 2026-10-03
+
+- **Package metadata only; no code changes.** The npm page links the documentation (`homepage`:
+  https://acp.skaigroup.tech/docs), the description says what the SDK does, more search keywords, and the README
+  links the docs and the quickstart.
+
 ## 0.3.0 — 2026-09-29
 
 - **Runs now include their content.** `wrapAgentRun` reports the answer text (read from OpenAI, Anthropic,

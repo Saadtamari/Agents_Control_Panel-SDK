@@ -11,7 +11,7 @@ Please **do not open a public issue**. Report privately through either:
 
 Include the affected version, a description, and steps to reproduce. We acknowledge reports within 3 business
 days and keep you updated until a fix ships. Our responsible disclosure policy, including safe harbor, is at
-https://api-production-b93a.up.railway.app/legal/responsible-disclosure.
+https://acp.skaigroup.tech/legal/responsible-disclosure.
 
 ## Supported versions
 

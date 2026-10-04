@@ -1,7 +1,7 @@
 {
   "name": "agent-control-panel",
-  "version": "0.3.0",
-  "description": "Agent Control Panel SDK — fail-open reporting and remote control",
+  "version": "0.3.1",
+  "description": "Agent Control Panel SDK for Node.js: monitor AI agents in production and pause, resume, stop or swap their model without redeploying. Fail-open, signed commands.",
   "license": "Apache-2.0",
   "keywords": [
     "ai",
@@ -10,9 +10,14 @@
     "observability",
     "control-plane",
     "openai",
-    "anthropic"
+    "anthropic",
+    "gemini",
+    "ai-agents",
+    "agent-control-panel",
+    "agent-monitoring",
+    "kill-switch"
   ],
-  "homepage": "https://github.com/Saadtamari/Agents_Control_Panel-SDK#readme",
+  "homepage": "https://acp.skaigroup.tech/docs",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Saadtamari/Agents_Control_Panel-SDK.git"
