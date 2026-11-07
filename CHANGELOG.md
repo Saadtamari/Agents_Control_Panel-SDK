@@ -3,6 +3,14 @@
 All notable changes to the SDK. Versions stay `0.x` until the wire contract is proven with real customers;
 after the first public release, contract changes are additive only (clients live inside customer apps).
 
+## 0.3.3 — 2026-11-07
+
+- **A pause now holds across restarts.** A restarted process starts `idle` until ACP's first heartbeat reply, and
+  `wrapAgentRun` used to run straight away: a paused agent ran once after every restart or deploy (seen on our
+  own demo agent). After `start()`, the first `wrapAgentRun` now waits for that reply, at most `startupWaitMs`
+  (new option, default 3000; 0 turns it off). Fail-open: if ACP does not answer in time the run goes ahead, and
+  later runs never wait. No wait with `disableControl`, or when `start()` was not called.
+
 ## 0.3.2 — 2026-11-03
 
 - **Package metadata only; no code changes.** The website moved to https://agentcontrolpanel.si: the npm page

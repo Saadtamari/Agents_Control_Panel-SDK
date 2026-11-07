@@ -365,6 +365,76 @@ describe("durable pause: heartbeat control state", () => {
     await acp.stop();
   });
 
+  // 2026-11-03: a paused agent ran once right after a deploy, because the first run started before the first
+  // heartbeat reply arrived. A pause must hold across restarts.
+  describe("pause holds across a restart (first run waits for the first heartbeat)", () => {
+    const delayed = (reply: ReturnType<typeof hb>, ms: number) =>
+      vi.fn(async (url: string) => {
+        if (String(url).includes("/api/heartbeat")) await new Promise((r) => setTimeout(r, ms));
+        return { ok: reply.ok, status: 200, json: async () => reply.json } as Response;
+      });
+
+    it("a run started right after start() is refused when ACP holds a pause", async () => {
+      const acp = make(delayed(hb("paused"), 80));
+      acp.start();
+      const fn = vi.fn(async () => "ok");
+      await expect(acp.wrapAgentRun(fn)).rejects.toBeInstanceOf(AgentPausedError);
+      expect(fn).not.toHaveBeenCalled();
+      await acp.stop();
+    });
+
+    it("also holds a stop, for several runs started at once", async () => {
+      const acp = make(delayed(hb("stopped"), 50));
+      acp.start();
+      const fn = vi.fn(async () => "ok");
+      const results = await Promise.allSettled([acp.wrapAgentRun(fn), acp.wrapAgentRun(fn), acp.wrapAgentRun(fn)]);
+      expect(results.every((r) => r.status === "rejected")).toBe(true);
+      expect(fn).not.toHaveBeenCalled();
+      await acp.stop();
+    });
+
+    it("fails open: if ACP does not answer within startupWaitMs the run goes ahead, and later runs do not wait", async () => {
+      const never = vi.fn((url: string) =>
+        String(url).includes("/api/heartbeat")
+          ? new Promise<Response>(() => {})
+          : Promise.resolve({ ok: true, status: 200, json: async () => ({}) } as Response),
+      );
+      const acp = make(never, { startupWaitMs: 100 });
+      acp.start();
+      const t0 = Date.now();
+      await expect(acp.wrapAgentRun(async () => "first")).resolves.toBe("first");
+      const firstWait = Date.now() - t0;
+      expect(firstWait).toBeGreaterThanOrEqual(90);
+      expect(firstWait).toBeLessThan(1000);
+      const t1 = Date.now();
+      await expect(acp.wrapAgentRun(async () => "second")).resolves.toBe("second");
+      expect(Date.now() - t1).toBeLessThan(50);
+      await acp.stop();
+    });
+
+    it("does not wait when startupWaitMs is 0, when control is disabled, or when start() was never called", async () => {
+      for (const extra of [{ startupWaitMs: 0 }, { disableControl: true }]) {
+        const acp = make(delayed(hb("paused"), 300), extra);
+        acp.start();
+        const t0 = Date.now();
+        await expect(acp.wrapAgentRun(async () => "ran")).resolves.toBe("ran");
+        expect(Date.now() - t0).toBeLessThan(150);
+        await acp.stop();
+      }
+      const notStarted = make(delayed(hb("paused"), 300));
+      await expect(notStarted.wrapAgentRun(async () => "ran")).resolves.toBe("ran");
+    });
+
+    it("a running agent is not held up longer than the heartbeat round trip", async () => {
+      const acp = make(delayed(hb("running"), 30));
+      acp.start();
+      const t0 = Date.now();
+      await expect(acp.wrapAgentRun(async () => "ok")).resolves.toBe("ok");
+      expect(Date.now() - t0).toBeLessThan(500);
+      await acp.stop();
+    });
+  });
+
   it("adopts stopped, and releases an ACP hold once ACP no longer holds it (resume with no webhook)", async () => {
     const replies = [hb("stopped"), hb("running")];
     let i = 0;

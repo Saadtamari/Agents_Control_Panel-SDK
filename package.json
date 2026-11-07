@@ -1,6 +1,6 @@
 {
   "name": "agent-control-panel",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Agent Control Panel SDK for Node.js: monitor AI agents in production and pause, resume, stop or swap their model without redeploying. Fail-open, signed commands.",
   "license": "Apache-2.0",
   "keywords": [

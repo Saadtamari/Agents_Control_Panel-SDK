@@ -38,7 +38,15 @@ export type CreateClientOptions = {
    * errors), whatever `reportRun` or `wrapAgentRun` is given.
    */
   captureContent?: boolean;
+  /**
+   * After `start()`, the first `wrapAgentRun` waits up to this long (ms) for ACP's first heartbeat reply, so a
+   * pause or stop set in ACP holds across restarts and deploys. Default 3000. If ACP does not answer in time the
+   * run goes ahead (fail-open), and later runs never wait. 0 turns the wait off.
+   */
+  startupWaitMs?: number;
 };
+
+const DEFAULT_STARTUP_WAIT_MS = 3_000;
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
@@ -156,6 +164,9 @@ export class AcpClient {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private flushing: Promise<void> | null = null;
   private started = false;
+  private startupWaitMs: number;
+  /** The first heartbeat sent by start(); runs wait for it (bounded) once, then it is cleared. */
+  private firstHeartbeat: Promise<void> | null = null;
   private nonceCache = new NonceCache();
   private runsSinceLast = 0;
   private tokensSinceLast = 0;
@@ -191,6 +202,7 @@ export class AcpClient {
     this.disableControl =
       opts.disableControl === true || process.env.ACP_DISABLE_CONTROL === "1";
     this.captureContent = opts.captureContent !== false;
+    this.startupWaitMs = Math.max(0, opts.startupWaitMs ?? DEFAULT_STARTUP_WAIT_MS);
   }
 
   get status(): AgentStatus {
@@ -204,7 +216,7 @@ export class AcpClient {
   start(): void {
     if (this.started) return;
     this.started = true;
-    void this.heartbeat();
+    this.firstHeartbeat = this.heartbeat();
     // unref(): the client's timers must never keep a script, cron job or worker alive on their own;
     // pending runs are still flushed on "beforeExit" (and by stop()).
     this.heartbeatTimer = setInterval(() => {
@@ -318,6 +330,24 @@ export class AcpClient {
       this.holdOrigin = null;
       this.logger.info?.("control state from ACP: released");
     }
+  }
+
+  /**
+   * A process that restarts starts "idle" until ACP's first heartbeat reply says otherwise, so without this a
+   * paused agent ran once after every restart. Bounded by startupWaitMs and fail-open (the heartbeat never
+   * throws); only the first run(s) after start() wait.
+   */
+  private async awaitStartupControlState(): Promise<void> {
+    const first = this.firstHeartbeat;
+    if (!first || this.disableControl || this.startupWaitMs === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, this.startupWaitMs);
+      timer.unref?.();
+    });
+    await Promise.race([first, timeout]);
+    clearTimeout(timer);
+    this.firstHeartbeat = null;
   }
 
   private async heartbeat(): Promise<void> {
@@ -496,6 +526,7 @@ export class AcpClient {
     fn: () => Promise<T>,
     opts?: { inputSummary?: string; userInput?: string; fullInput?: unknown; modelUsed?: string },
   ): Promise<T> {
+    await this.awaitStartupControlState();
     if (this._status === "paused" || this._status === "stopped") {
       throw new AgentPausedError(this._status);
     }
