@@ -3,6 +3,12 @@
 All notable changes to the SDK. Versions stay `0.x` until the wire contract is proven with real customers;
 after the first public release, contract changes are additive only (clients live inside customer apps).
 
+## 0.3.2 — 2026-11-03
+
+- **Package metadata only; no code changes.** The website moved to https://agentcontrolpanel.si: the npm page
+  (`homepage`) and the README now link https://agentcontrolpanel.si/docs. The old links redirect there. The API
+  host your app reports to is unchanged.
+
 ## 0.3.1 — 2026-10-03
 
 - **Package metadata only; no code changes.** The npm page links the documentation (`homepage`:

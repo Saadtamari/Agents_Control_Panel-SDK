@@ -1,6 +1,6 @@
 {
   "name": "agent-control-panel",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Agent Control Panel SDK for Node.js: monitor AI agents in production and pause, resume, stop or swap their model without redeploying. Fail-open, signed commands.",
   "license": "Apache-2.0",
   "keywords": [
@@ -17,7 +17,7 @@
     "agent-monitoring",
     "kill-switch"
   ],
-  "homepage": "https://acp.skaigroup.tech/docs",
+  "homepage": "https://agentcontrolpanel.si/docs",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Saadtamari/Agents_Control_Panel-SDK.git"
@@ -59,6 +59,6 @@
     "@types/node": "^20.16.11",
     "tsup": "^8.4.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   }
 }
