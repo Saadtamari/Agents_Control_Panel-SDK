@@ -20,10 +20,10 @@
   "homepage": "https://agentcontrolpanel.si/docs",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Saadtamari/Agents_Control_Panel-SDK.git"
+    "url": "git+https://github.com/agentcontrolpanel-si/Agents_Control_Panel-SDK.git"
   },
   "bugs": {
-    "url": "https://github.com/Saadtamari/Agents_Control_Panel-SDK/issues"
+    "url": "https://github.com/agentcontrolpanel-si/Agents_Control_Panel-SDK/issues"
   },
   "type": "module",
   "sideEffects": false,
