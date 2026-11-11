@@ -189,6 +189,48 @@ describe("token extraction", () => {
   });
 });
 
+describe("agent framework results (wrapped as they are, no adapter)", () => {
+  // OpenAI Agents SDK: run() resolves to a RunResult; finalOutput is the answer, runContext.usage adds up the run.
+  const agentsRun = {
+    finalOutput: "Order 42 ships tomorrow.",
+    runContext: { usage: { requests: 2, inputTokens: 50, outputTokens: 13, totalTokens: 63 } },
+    newItems: [],
+  };
+  // LangGraph: graph.invoke() returns the state; AI messages carry usage_metadata; tool messages do not.
+  const graphState = {
+    messages: [
+      { type: "human", content: "Where is order 42?" },
+      { type: "ai", content: "", tool_calls: [{ name: "order_status" }], usage_metadata: { input_tokens: 20, output_tokens: 5, total_tokens: 25 } },
+      { type: "tool", content: "Order 42 ships tomorrow.", tool_call_id: "c1" },
+      { type: "ai", content: "Order 42 ships tomorrow.", usage_metadata: { input_tokens: 30, output_tokens: 8, total_tokens: 38 } },
+    ],
+  };
+
+  it("OpenAI Agents SDK run result: text and the whole run's tokens", () => {
+    expect(extractText(agentsRun)).toBe("Order 42 ships tomorrow.");
+    expect(extractTokens(agentsRun)).toEqual({ tokensInput: 50, tokensOutput: 13, tokensTotal: 63 });
+    expect(extractText({ finalOutput: { orderId: "42", eta: "tomorrow" }, runContext: {} })).toBe('{"orderId":"42","eta":"tomorrow"}');
+  });
+
+  it("LangGraph state: the last AI message's text and the sum over every model call", () => {
+    expect(extractText(graphState)).toBe("Order 42 ships tomorrow.");
+    expect(extractTokens(graphState)).toEqual({ tokensInput: 50, tokensOutput: 13, tokensTotal: 63 });
+  });
+
+  it("a single LangChain message, and content given as parts", () => {
+    const msg = { content: [{ type: "text", text: "Hi " }, { type: "text", text: "there" }], usage_metadata: { input_tokens: 4, output_tokens: 2, total_tokens: 6 } };
+    expect(extractText({ messages: [msg] })).toBe("Hi there");
+    expect(extractText({ content: "plain", usage_metadata: { input_tokens: 1, output_tokens: 1 } })).toBe("plain");
+    expect(extractTokens(msg)).toEqual({ tokensInput: 4, tokensOutput: 2, tokensTotal: 6 });
+  });
+
+  it("does not misread unrelated objects", () => {
+    expect(extractText({ messages: [] })).toBeNull();
+    expect(extractTokens({ messages: [{ type: "human", content: "x" }] })).toBeNull();
+    expect(extractText({ content: "no usage metadata here" })).toBeNull();
+  });
+});
+
 describe("webhook verification", () => {
   const secret = "whsec_current";
   const prev = "whsec_prev";

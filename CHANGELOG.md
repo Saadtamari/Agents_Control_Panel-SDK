@@ -3,6 +3,14 @@
 All notable changes to the SDK. Versions stay `0.x` until the wire contract is proven with real customers;
 after the first public release, contract changes are additive only (clients live inside customer apps).
 
+## 0.3.4 — 2026-11-11
+
+- **Agent framework results are read as they are; no adapter code.** `wrapAgentRun(() => run(agent, input))`
+  now records the answer and tokens of an OpenAI Agents SDK run (`finalOutput`, structured output as JSON;
+  `runContext.usage`, every model call of the run). A LangGraph.js state (`graph.invoke()`, `{ messages }`) gives
+  the last AI message as the answer and the sum of every AI message's `usage_metadata` as tokens; a single
+  LangChain message (`chatModel.invoke()`) is read too. Additive: shapes that were read before read the same.
+
 ## 0.3.3 — 2026-11-07
 
 - **A pause now holds across restarts.** A restarted process starts `idle` until ACP's first heartbeat reply, and

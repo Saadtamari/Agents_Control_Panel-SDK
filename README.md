@@ -37,7 +37,8 @@ const answer = await acp.wrapAgentRun(() => llm.chat(messages), {
 
 `wrapAgentRun` records duration, success/error, token usage and the answer text, read automatically from OpenAI
 (Chat Completions and Responses), Anthropic (including prompt-cache tokens), Google Gemini and Vercel AI SDK
-results; for anything else pass tokens and `fullOutput` to `reportRun` yourself. ACP's quality reviews, Test Lab
+results, and from agent framework results as they are: an OpenAI Agents SDK run (`run(agent, input)`, every
+model call of the run) and a LangGraph.js state or LangChain message (since 0.3.4); for anything else pass tokens and `fullOutput` to `reportRun` yourself. ACP's quality reviews, Test Lab
 and error explanations read the user input, full input and output, so pass them for accurate results (each field
 is kept up to 100,000 characters). To send metadata only, create the client with `captureContent: false`. While the agent is paused or stopped it throws `AgentPausedError` **without calling your
 function**, so a pause really stops model calls.
@@ -64,7 +65,7 @@ arrive with the next heartbeat (within 30 s); prompt changes are fetched before 
 | `createClient(options)` | `url`, `apiKey`, `agentId`, `webhookSecret` (required); `webhookSecretPrev` during rotation; `heartbeatMs` (30000), `flushMs` (5000), `flushAt` (50), `maxBuffer` (200); `logger`; `disableControl`; `captureContent` (default `true`; `false` = metadata only); `startupWaitMs` (3000, see `wrapAgentRun`); `fetch` (for tests). `url` must be https (or http to localhost). |
 | `start()` / `stop()` | Start heartbeats and background flushing / flush everything and stop. The timers never keep your process alive on their own, and pending runs are flushed when Node is about to exit; call `stop()` on shutdown to be sure every run is sent. |
 | `wrapAgentRun(fn, { userInput?, fullInput?, inputSummary?, modelUsed? })` | Run `fn`, report it (with the answer text from the result), rethrow its error unchanged. Throws `AgentPausedError` while paused or stopped. After `start()`, the first call waits up to `startupWaitMs` for ACP's first heartbeat reply, so a pause holds across restarts (fail-open: if ACP does not answer, the run goes ahead). |
-| `extractText(result)` | The answer text of an OpenAI, Anthropic, Gemini or Vercel AI SDK result, or `null`. |
+| `extractText(result)` | The answer text of an OpenAI, Anthropic, Gemini, Vercel AI SDK, OpenAI Agents SDK or LangGraph result, or `null`. |
 | `reportRun(input)` | Report a run yourself (status, tokens, model, timings, summaries, `userInput`, `fullInput`, `fullOutput`, optional `dedupeKey`). Buffered, never throws. |
 | `fetchPrompt()` | The agent's current prompt from ACP (composed with its skills), cached; falls back to the cache on any error. |
 | `getEffectiveModel(fallback)` | The model ACP asked for (after a model swap), else `fallback`. |

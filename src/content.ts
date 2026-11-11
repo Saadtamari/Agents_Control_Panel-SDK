@@ -23,6 +23,8 @@ function joinText(parts: unknown): string | null {
  * - Anthropic Messages: content[] text blocks
  * - Google Gemini: candidates[0].content.parts[].text (or response.candidates…)
  * - Vercel AI SDK: text
+ * - OpenAI Agents SDK run result: finalOutput (a string, or structured output as JSON)
+ * - LangGraph state ({ messages }): the last AI message's content; a single LangChain message: its content
  */
 export function extractText(result: unknown): string | null {
   if (typeof result === "string") return result.length > 0 ? result : null;
@@ -53,7 +55,43 @@ export function extractText(result: unknown): string | null {
     if (text) return text;
   }
 
+  // OpenAI Agents SDK: run() resolves to a RunResult whose finalOutput is the answer.
+  if ("finalOutput" in r && r.finalOutput != null) {
+    if (typeof r.finalOutput === "string") return str(r.finalOutput);
+    try {
+      return str(JSON.stringify(r.finalOutput));
+    } catch {
+      /* unserializable: fall through */
+    }
+  }
+
+  // LangGraph: graph.invoke() returns the state; the answer is the last AI message.
+  if (Array.isArray(r.messages) && r.messages.length > 0) {
+    const last = lastAiMessage(r.messages);
+    const text = last ? messageText(last) : null;
+    if (text) return text;
+  }
+  // A single LangChain message (chatModel.invoke()).
+  if (typeof r.content === "string" && ("usage_metadata" in r || "response_metadata" in r)) return str(r.content);
+
   return str(r.text);
+}
+
+/** LangChain messages: class instances or plain objects. Reads properties only (never calls getType()). */
+function isAiMessage(m: unknown): boolean {
+  if (!m || typeof m !== "object") return false;
+  const o = m as Record<string, unknown>;
+  return o.type === "ai" || o.role === "assistant" || o._type === "ai" || (o.usage_metadata != null && typeof o.usage_metadata === "object");
+}
+
+function lastAiMessage(messages: unknown[]): Record<string, unknown> | null {
+  for (let i = messages.length - 1; i >= 0; i--) if (isAiMessage(messages[i])) return messages[i] as Record<string, unknown>;
+  const tail = messages[messages.length - 1];
+  return tail && typeof tail === "object" ? (tail as Record<string, unknown>) : null;
+}
+
+function messageText(m: Record<string, unknown>): string | null {
+  return str(m.content) ?? joinText(m.content);
 }
 
 /** Serialize for a full-content field and cut it to ACP's limit. Unserializable values are left out. */

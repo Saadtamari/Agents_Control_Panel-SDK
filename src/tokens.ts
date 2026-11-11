@@ -21,6 +21,9 @@ function usage(tokensInput: number, tokensOutput: number, total?: unknown): Toke
  *   input_tokens excludes them
  * - Google Gemini: usageMetadata (or response.usageMetadata) promptTokenCount / candidatesTokenCount
  * - Vercel AI SDK: usage.inputTokens / outputTokens (v5) or usage.promptTokens / completionTokens (v4)
+ * - OpenAI Agents SDK run result: runContext.usage (every model call of the run)
+ * - LangGraph state ({ messages }): the sum of each AI message's usage_metadata (every model call of the run);
+ *   a single LangChain message: its usage_metadata
  */
 export function extractTokens(result: unknown): TokenUsage | null {
   if (!result || typeof result !== "object") return null;
@@ -51,5 +54,34 @@ export function extractTokens(result: unknown): TokenUsage | null {
     return usage(num(meta.promptTokenCount), num(meta.candidatesTokenCount), meta.totalTokenCount);
   }
 
+  // OpenAI Agents SDK: the run's usage adds up every model call (tool call turns included).
+  const runContext = r.runContext as Record<string, unknown> | undefined;
+  if (runContext && typeof runContext === "object" && runContext.usage && typeof runContext.usage === "object") {
+    const found = extractTokens({ usage: runContext.usage });
+    if (found) return found;
+  }
+
+  // LangChain: usage_metadata { input_tokens, output_tokens, total_tokens } on each AI message.
+  const single = langchainUsage(r.usage_metadata);
+  if (single) return single;
+  if (Array.isArray(r.messages)) {
+    let input = 0, output = 0, total = 0, seen = false;
+    for (const m of r.messages) {
+      const u = m && typeof m === "object" ? langchainUsage((m as Record<string, unknown>).usage_metadata) : null;
+      if (!u) continue;
+      seen = true;
+      input += u.tokensInput;
+      output += u.tokensOutput;
+      total += u.tokensTotal;
+    }
+    if (seen) return { tokensInput: input, tokensOutput: output, tokensTotal: total };
+  }
+
   return null;
+}
+
+function langchainUsage(meta: unknown): TokenUsage | null {
+  if (!meta || typeof meta !== "object") return null;
+  const m = meta as Record<string, unknown>;
+  return has(m, "input_tokens", "output_tokens") ? usage(num(m.input_tokens), num(m.output_tokens), m.total_tokens) : null;
 }
